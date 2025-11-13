@@ -229,3 +229,139 @@ fn main() {
 
 ---
 
+## 4. Промты для генерации документации (Page Generation)
+
+### 4.1. Генерация заголовка страницы
+
+**Расположение:** `ee/tabby-webserver/src/service/page/prompt_tools.rs:3-11`
+
+**Назначение:** Генерирует краткий заголовок для страницы документации на основе предоставленного контента или всей беседы. Используется для автоматического именования страниц.
+
+**Применение:** Вызывается при создании новой страницы документации или при необходимости изменить заголовок.
+
+**Формат промта (с предложенным заголовком):**
+```text
+Please help me to generate a page title for the input provided: {title}
+Please only generate the title and nothing else. Do not include any additional text.
+```
+
+**Формат промта (без предложенного заголовка):**
+```text
+Summarize the above conversation and create a succinct title that encapsulates its essence. Please only generate the title and nothing else. Do not include any additional text or context.
+Please only generate the title and nothing else. Do not include any additional text.
+```
+
+---
+
+### 4.2. Генерация введения страницы
+
+**Расположение:** `ee/tabby-webserver/src/service/page/prompt_tools.rs:13-29`
+
+**Назначение:** Создает вводный параграф для страницы документации на основе заголовка страницы и списка подразделов.
+
+**Применение:** Вызывается после определения структуры страницы для генерации вводного текста.
+
+**Формат промта:**
+```text
+You're writing the intro section of a page named "{title}". It contains the following sub sections:
+{page_section_titles}.
+
+Here're some rules you need to follow when creating content:
+* Please generate the content for the introduction section based on the information provided above.
+* Ensure the content is a single paragraph without any subtitles or nested sections.
+* Do not just blindly create a intro section listing all sub section, you should give a high level overview of the page, e.g background, why it's important, etc.
+* Include code snippets if necessary, but keep them concise and relevant.
+* Do not include any additional text.
+```
+
+---
+
+### 4.3. Генерация заголовков разделов
+
+**Расположение:** `ee/tabby-webserver/src/service/page/prompt_tools.rs:52-73`
+
+**Назначение:** Генерирует заголовки для новых разделов страницы документации на основе существующего контента и темы нового раздела.
+
+**Применение:** Вызывается при добавлении новых разделов к странице документации.
+
+**Формат промта:**
+```text
+Here's some existing writings about the page.
+=== Page Content Start ===
+# {title}
+
+{existing_sections_with_content}
+=== Page Content End ===
+
+{optional_new_section_description}Please generate {count} section titles for the page based on above information.
+Please only generate the section title and nothing else. Do not include any additional text.
+Each section title should be on a new line.
+There's no need to have a intro section, as page will contains a intro section anyway.
+```
+
+---
+
+### 4.4. Генерация контента раздела
+
+**Расположение:** `ee/tabby-webserver/src/service/page/prompt_tools.rs:75-92`
+
+**Назначение:** Создает содержимое для конкретного раздела страницы документации, учитывая контекст предыдущих разделов.
+
+**Применение:** Вызывается при написании контента для каждого раздела страницы.
+
+**Формат промта:**
+```text
+Here's some existing writings about the page.
+=== Page Content Start ===
+# {title}
+
+{existing_sections_with_content}
+=== Page Content End ===
+
+The current section title is: {new_section_title}, please create content for this section based on above information.
+
+Here're some rules you need to follow when creating content:
+* Try not repeat content / pattern from the previous sections as much as possible.
+* Ensure the content is a single paragraph without any subtitles or nested sections.
+* Do not include any additional output, just write the content directly.
+* Include code snippets if necessary, but keep them concise and relevant, and try refer to the code snippets in the previous sections if possible (instead of creating new ones).
+```
+
+---
+
+## 5. Промты для анализа репозитория
+
+### 5.1. Генерация вопросов для онбординга в репозиторий
+
+**Расположение:** `ee/tabby-webserver/src/service/repository/prompt_tools.rs:27-44`
+
+**Назначение:** Генерирует 3 специфических вопроса, помогающих новому разработчику понять структуру и организацию кодовой базы на основе дерева файлов репозитория.
+
+**Применение:** Вызывается при просмотре структуры репозитория для помощи в онбординге новых разработчиков.
+
+**Формат промта:**
+```text
+You are a helpful assistant that helps the user to ask related questions about a codebase "{repository_name}".
+
+Here is codebase directory structure:
+Type: {type}, Path: {path}
+Type: {type}, Path: {path}
+...
+{optional_truncation_notice}
+
+Please generate 3 specific questions to help a new engineer understand this codebase.
+
+Each question should be concise (max 10 words) and focused. Return only the questions, one per line.
+```
+
+**Пример структуры файлов в промте:**
+```text
+Type: dir, Path: src/
+Type: file, Path: src/main.rs
+Type: dir, Path: tests/
+Type: file, Path: README.md
+Note: The file list has been truncated. There may be more files in subdirectories that were not included due to the limit.
+```
+
+---
+
