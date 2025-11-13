@@ -691,3 +691,354 @@ Return only the questions, one per line.
 
 ---
 
+## 5. Client-Side Edit Pipelines - Клиентские пайплайны редактирования
+
+### Назначение
+Интеллектуальное редактирование кода в IDE через команды пользователя с использованием LLM для генерации, изменения и форматирования кода.
+
+### 5.1. Inline Edit Pipeline - Редактирование кода
+
+#### Точка входа
+`clients/tabby-agent/src/chat/inlineEdit.ts:143` - `ChatEditProvider::provideEdit()`
+
+#### Схема потока данных
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ ВХОД: Document + Selection/Position + Command + Context        │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 1: Валидация и определение режима                         │
+│ Файл: inlineEdit.ts:143-186                                    │
+├────────────────────────────────────────────────────────────────┤
+│ → Проверка доступности фичи                                   │
+│ → Валидация длины документа (max из config)                   │
+│ → Инициализация mutex abort controller                        │
+│ → Определение режима: INSERT vs REPLACE                       │
+│   • INSERT: курсор без выделения                              │
+│   • REPLACE: есть выделенный текст                            │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 2: Выбор промта                                            │
+│ Файл: inlineEdit.ts:194-203                                    │
+├────────────────────────────────────────────────────────────────┤
+│ Проверка preset команд:                                        │
+│ • /fix → fix-spelling-and-grammar.md                          │
+│ • /doc → generate-docs.md                                      │
+│ • Custom preset из config                                      │
+│                                                                 │
+│ Default промты:                                                │
+│ • REPLACE → edit-command-replace.md                           │
+│ • INSERT → edit-command-insert.md                             │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 3: Извлечение контекста                                   │
+│ Файл: inlineEdit.ts:205-219                                    │
+├────────────────────────────────────────────────────────────────┤
+│ → Selection text (выделенный текст)                           │
+│ → Prefix text (с лимитом maxChars)                            │
+│ → Suffix text (с лимитом maxChars)                            │
+│ → Балансировка prefix/suffix если документ слишком длинный    │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 4: Загрузка файлового контекста (опционально)             │
+│ Файл: inlineEdit.ts:221-246                                    │
+├────────────────────────────────────────────────────────────────┤
+│ Если params.context указаны:                                  │
+│ → Загрузка дополнительных файлов                              │
+│ → Max files из config                                          │
+│ → Max chars per file из config                                │
+│ → Форматирование через templates:                             │
+│   • include-file-context-list.md                              │
+│   • include-file-context-item.md                              │
+│                                                                 │
+│ Формат:                                                        │
+│ title="path/to/file.rs"                                        │
+│ referrer="#file1"                                              │
+│ <CONTEXTDOCUMENT>content</CONTEXTDOCUMENT>                    │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 5: Построение финального промта                           │
+│ Файл: inlineEdit.ts:248-262                                    │
+├────────────────────────────────────────────────────────────────┤
+│ Подстановка placeholders:                                      │
+│ → {{filepath}} - путь к файлу                                 │
+│ → {{documentPrefix}} - код перед курсором/выделением          │
+│ → {{document}} - выделенный текст (REPLACE mode)              │
+│ → {{documentSuffix}} - код после курсора/выделения            │
+│ → {{command}} - команда пользователя                          │
+│ → {{languageId}} - язык программирования                      │
+│ → {{fileContext}} - дополнительные файлы                      │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 6: Потоковый запрос к LLM                                 │
+│ Файл: inlineEdit.ts:264-271                                    │
+├────────────────────────────────────────────────────────────────┤
+│ → TabbyApiClient::fetchChatStream()                           │
+│ → POST /v1beta/chat/completions                               │
+│ → Streaming response                                           │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 7: Обработка потока и парсинг XML                         │
+│ Файл: inlineEdit.ts:290-301, utils.ts:28-183                  │
+├────────────────────────────────────────────────────────────────┤
+│ → Парсинг XML тегов:                                          │
+│   • <GENERATEDCODE>...</GENERATEDCODE> (обязательно)          │
+│   • <COMMENTS>...</COMMENTS> (опционально)                    │
+│                                                                 │
+│ → Генерация diff preview:                                     │
+│   • Вычисление insertions (добавления)                        │
+│   • Вычисление deletions (удаления)                           │
+│   • Unchanged lines (неизменные строки)                       │
+│                                                                 │
+│ → Применение workspace edits с маркерами:                     │
+│   <<<<<<< tabby-abc123                                         │
+│   # Comments (если есть)                                       │
+│   . unchanged line                                             │
+│   | in-progress line (streaming)                              │
+│   + added line                                                 │
+│   - removed line                                               │
+│   = unchanged line                                             │
+│   >>>>>>> tabby-abc123 [markers: accept, discard]             │
+└────────────────┬───────────────────────────────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│ ШАГ 8: Резолюция пользователем                                │
+│ Файл: inlineEdit.ts:311-395 (resolveEdit)                     │
+├────────────────────────────────────────────────────────────────┤
+│ Пользователь выбирает действие:                               │
+│ → Accept: Применить изменения (убрать маркеры)                │
+│ → Discard: Отменить изменения (вернуть оригинал)              │
+│ → Cancel: Прервать операцию                                   │
+│                                                                 │
+│ → Парсинг маркеров для определения финального кода            │
+│ → Применение финального workspace edit                        │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 5.2. Commit Message Generation Pipeline
+
+#### Схема
+
+```
+Git Diff → Build Prompt → LLM → Parse Response → Commit Message
+                         (generate-commit-message.md)
+```
+
+**Вход:** Git staged changes diff
+**Выход:** `<type>(<scope>): <description>` (Conventional Commits format)
+
+### 5.3. Branch Name Generation Pipeline
+
+#### Схема
+
+```
+Git Diff + User Input → Build Prompt → LLM → Parse XML → 3-5 Branch Names
+                         (generate-branch-name.md)
+```
+
+**Вход:** Git diff + опциональный user input
+**Выход:** Список из 3-5 kebab-case имен веток в `<BRANCHNAMES>` тегах
+
+### 5.4. Smart Apply Pipeline
+
+#### Схема (двухступенчатая)
+
+```
+┌─────────────────────────────────────────────────────┐
+│ ЭТАП 1: Определение позиции вставки                 │
+├─────────────────────────────────────────────────────┤
+│ Document + Code to Insert                           │
+│         ↓                                            │
+│ Prompt: provide-smart-apply-line-range.md           │
+│         ↓                                            │
+│ LLM → <GENERATEDCODE>16-19</GENERATEDCODE>         │
+│         ↓                                            │
+│ Line Range (startLine-endLine)                      │
+└───────────────────┬─────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────┐
+│ ЭТАП 2: Интеллектуальная вставка кода              │
+├─────────────────────────────────────────────────────┤
+│ Document + Code Block + Line Range                  │
+│         ↓                                            │
+│ Prompt: generate-smart-apply.md                     │
+│         ↓                                            │
+│ LLM → <GENERATEDCODE>                               │
+│       full modified document                         │
+│       </GENERATEDCODE>                               │
+│         ↓                                            │
+│ Complete Modified Document                           │
+└─────────────────────────────────────────────────────┘
+```
+
+**Особенности:**
+- Анализ структуры кода для определения лучшей позиции
+- Сохранение отступов и форматирования
+- Избежание дублирования кода
+- Параллельное размещение, а не вложенность
+
+### Используемые промты для всех edit операций
+
+1. **Edit Command Replace** - Изменение выделенного кода
+2. **Edit Command Insert** - Вставка нового кода
+3. **Generate Docs** - Добавление документации
+4. **Fix Spelling and Grammar** - Исправление текста
+5. **Smart Apply** - Интеллектуальная вставка кода
+6. **Smart Apply Line Range** - Определение позиции вставки
+7. **File Context List/Item** - Форматирование дополнительных файлов
+8. **Generate Commit Message** - Генерация commit message
+9. **Generate Branch Name** - Генерация имен веток
+
+### Diff Markers Format
+
+```text
+<<<<<<< tabby-{id}
+# Optional comments explaining changes
+. unchanged line before
++ newly added line
+- removed line
+| line being generated (in-progress during streaming)
+= unchanged line after
+>>>>>>> tabby-{id} [markers: accept, discard]
+```
+
+### Оптимизации
+
+- **Mutex Lock:** Предотвращение одновременных edit операций
+- **Abort Controller:** Отмена предыдущих запросов при новых
+- **Streaming Display:** Показ прогресса генерации в реальном времени
+- **Balanced Context:** Умная балансировка prefix/suffix при длинных документах
+- **XML Parsing:** Надежный парсинг с fallback на raw text
+
+---
+
+## Общая сводка по пайплайнам
+
+### Количество пайплайнов: 9
+
+1. **Answer/Chat** - 6 шагов, RAG с потоковой генерацией
+2. **Code Completion** - 10 шагов, client-server-client flow
+3. **Page Generation** - 6 шагов с циклом по разделам
+4. **Repository Analysis** - 3 шага с кэшированием
+5. **Inline Edit** - 8 шагов с preview и резолюцией
+6. **Commit Message** - 3 шага, прямая генерация
+7. **Branch Name** - 3 шага, множественные варианты
+8. **Smart Apply Line Range** - 3 шага, определение позиции
+9. **Smart Apply** - 3 шага, интеллектуальная вставка
+
+### Общие паттерны
+
+#### 1. RAG (Retrieval-Augmented Generation)
+Используется в: Answer, Code Completion, Page Generation
+- Поиск через BM25 + embeddings
+- RRF (Reciprocal Rank Fusion) для ранжирования
+- Система цитирования `[[citation:x]]`
+
+#### 2. Streaming Responses
+Используется в: Answer, Page Generation, Inline Edit
+- Инкрементальная отправка результатов
+- Улучшение perceived performance
+- Возможность раннего прерывания
+
+#### 3. Кэширование
+- **Time-based:** Repository questions (30 мин)
+- **Hash-based:** Code completion (context hash)
+- **Config-based:** Model-specific templates
+
+#### 4. Приоритизация контекста
+Все пайплайны используют приоритизацию:
+- Code Completion: Declarations > Changed > Recent > Search
+- Answer: Snippet context > File list context
+- Page Generation: Existing sections > Attachments
+
+#### 5. XML-структурирование
+Клиентские промты используют XML для:
+- **Входные данные:** `<USERDOCUMENT>`, `<USERSELECTION>`, etc.
+- **Выходные данные:** `<GENERATEDCODE>`, `<BRANCHNAMES>`, etc.
+- Надежный парсинг с fallback
+
+#### 6. Quota Management
+Лимиты для предотвращения переполнения:
+- Code snippets: 768 chars (completion), 256 chars min для search
+- File list: 300 files (answer, repository)
+- Questions: 3 items, max 10-20 words each
+- Response: 1024 tokens (answer)
+
+#### 7. Параллелизация
+- Code Completion: Параллельный сбор контекста (LSP, search, git)
+- Page Generation: Параллельный сбор code/doc attachments для разделов
+- Таймауты: 500ms для automatic triggers
+
+#### 8. Валидация и Access Control
+Все серверные пайплайны:
+- Проверка `AccessPolicy`
+- Валидация source IDs
+- Проверка прав доступа к репозиториям
+
+### Интеграционная диаграмма
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    TABBY ARCHITECTURE                         │
+├──────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌─────────────────┐          ┌──────────────────┐          │
+│  │  IDE/Editor     │◄────────►│  Tabby Agent     │          │
+│  │  (VSCode, etc)  │  LSP/API │  (TypeScript)    │          │
+│  └─────────────────┘          └────────┬─────────┘          │
+│                                         │ HTTP API            │
+│                                         ▼                      │
+│                               ┌──────────────────┐           │
+│                               │  Tabby Server    │           │
+│                               │  (Rust)          │           │
+│                               └────────┬─────────┘           │
+│                                         │                      │
+│                  ┌──────────────────────┼──────────────────┐ │
+│                  │                      │                   │ │
+│                  ▼                      ▼                   ▼ │
+│         ┌─────────────┐       ┌─────────────┐    ┌──────────────┐
+│         │ Code Search │       │   LLM       │    │ Git Repos    │
+│         │ (BM25 +     │       │ (Inference) │    │ (Indexing)   │
+│         │  Embeddings)│       │             │    │              │
+│         └─────────────┘       └─────────────┘    └──────────────┘
+│                                                               │
+│  Data Flow:                                                  │
+│  1. User Action → Agent → Context Collection                │
+│  2. Agent → Server → RAG Search                             │
+│  3. Server → LLM → Generation                               │
+│  4. Server → Agent → Streaming Response                     │
+│  5. Agent → IDE → User Display                              │
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Ключевые метрики
+
+- **Общее количество промтов:** 22+ уникальных промтов
+- **Серверные сервисы:** Answer, Page, Repository, Completion
+- **Клиентские сервисы:** Inline Edit, Smart Apply, Commit/Branch Gen
+- **Используемые технологии:**
+  - Поиск: BM25, Embeddings, RRF, Tantivy
+  - Протоколы: HTTP API, LSP, WebSocket (streaming)
+  - Кэширование: In-memory, time-based, hash-based
+  - Форматы: JSON, XML tags, Markdown, Git diff
+
+---
+
