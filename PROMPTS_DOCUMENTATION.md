@@ -124,3 +124,108 @@ Answer: {"snippet": true, "file_list": true}
 
 ---
 
+## 3. Промты для автодополнения кода (Code Completion)
+
+### 3.1. Fill-in-Middle (FIM) промт с контекстными сниппетами
+
+**Расположение:** `crates/tabby/src/services/completion/completion_prompt.rs:32-143`
+
+**Назначение:** Построение промта для автодополнения кода с использованием техники Fill-in-Middle (FIM). Промт обогащается релевантными фрагментами кода из:
+- Деклараций (объявления функций, классов)
+- Недавно измененных файлов
+- Недавно открытых файлов
+- Поиска по кодовой базе
+
+**Применение:** Вызывается при каждом запросе автодополнения в редакторе для построения контекстуализированного промта.
+
+**Параметры:**
+- `prompt_template`: Шаблон для модели (опционально, зависит от модели)
+- Максимум 768 символов для сниппетов
+- Минимум 256 символов зарезервировано для поиска по коду
+
+**Формат промта без шаблона:**
+```text
+{prefix}
+```
+
+**Формат промта с шаблоном (пример CodeLlama):**
+```text
+<PRE> {prefix} <SUF>{suffix} <MID>
+```
+
+**Формат вставки сниппетов в prefix (для языков с комментариями):**
+```python
+# Path: {filepath_1}
+# {snippet_body_line_1}
+# {snippet_body_line_2}
+#
+# Path: {filepath_2}
+# {snippet_body_line_3}
+{original_prefix}
+```
+
+**Приоритет источников сниппетов:**
+1. Declarations (наивысший приоритет)
+2. Relevant snippets from changed files
+3. Relevant snippets from recently opened files
+4. Code search results
+
+---
+
+### 3.2. Next Edit Prediction промт
+
+**Расположение:** `crates/tabby/src/services/completion/next_edit_prompt.rs:10-18`
+
+**Назначение:** Предсказание следующего редактирования кода на основе истории изменений. Используется для предсказания паттернов редактирования и предложения следующего логического шага.
+
+**Применение:** Вызывается когда доступна история редактирований файла для предсказания следующего изменения.
+
+**Формат промта:**
+```text
+<|original_code|>
+{original_code}
+<|edits_diff|>
+{edits_diff}
+<|current_version|>
+{current_version}
+<|next_version|>
+```
+
+**Пример:**
+```text
+<|original_code|>
+fn main() {
+    println!("Hello, world!");
+}
+<|edits_diff|>
+---src/main.rs
++++src/main.rs
+@@ -1,1 +1,2 @@
+    println!("Hello, world!");
+    let x = 5;
+    println!("Hello, world!");
+<|current_version|>
+fn main() {
+    let x = 5;
+    println!("Hello, world!");
+}
+<|next_version|>
+```
+
+---
+
+### 3.3. Стандартный FIM шаблон для HTTP API
+
+**Расположение:** `crates/http-api-bindings/src/completion/mod.rs:59-60`
+
+**Назначение:** Базовый FIM шаблон для работы с внешними completion API (OpenAI, Mistral и др.). Используется когда модель поддерживает FIM inference через HTTP API.
+
+**Применение:** Отправляется как часть запроса к внешним API для автодополнения.
+
+**Формат:**
+```text
+{prefix}<|FIM|>{suffix}
+```
+
+---
+
